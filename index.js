@@ -85,5 +85,8 @@ app.delete('/api/products/:id', (req, res) => {
 });
 
 // Start Server
-const PORT = 3306;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+const PORT = process.env.PORT || 8080;
+
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
