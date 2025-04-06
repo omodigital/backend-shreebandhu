@@ -1,39 +1,57 @@
+require('dotenv').config();
+
 const express = require('express');
 const mysql = require('mysql2');
-
 const multer = require('multer');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
+const fs = require('fs');
+const helmet = require('helmet');
 
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// MySQL Connection Setup
-const connection = mysql.createConnection({
+// Middleware
+app.use(cors());
+app.use(helmet());
+app.use(bodyParser.json());
+
+// Ensure uploads directory exists
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+app.use('/uploads', express.static(uploadDir));
+
+// MySQL Connection Pool
+const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME
-});
-connection.connect(err => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
-    }
-    console.log('Connected to MySQL');
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
 });
 
-// Multer for File Uploads
+// Multer Configuration
 const storage = multer.diskStorage({
   destination: './uploads/',
   filename: (req, file, cb) => {
     cb(null, `${Date.now()}_${file.originalname}`);
   },
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (ext !== '.jpg' && ext !== '.jpeg' && ext !== '.png') {
+      return cb(new Error('Only .jpg, .jpeg, and .png files are allowed'));
+    }
+    cb(null, true);
+  },
+});
 
 // Add Product
 app.post('/api/products', upload.single('image'), (req, res) => {
@@ -41,30 +59,26 @@ app.post('/api/products', upload.single('image'), (req, res) => {
   const image = req.file ? `/uploads/${req.file.filename}` : null;
 
   const sql = 'INSERT INTO products (name, mainTitle, subTitle, price, mrp, image, rating, reviews, weight, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
-  
-  // Use connection for the query
-  connection.query(sql, [name, mainTitle, subTitle, price, mrp, image, rating, reviews, weight, category], (err, result) => {
+  const values = [name, mainTitle, subTitle, price, mrp, image, rating, reviews, weight, category];
+
+  pool.query(sql, values, (err, result) => {
     if (err) {
-      console.error(err);
-      res.status(500).send('Error saving product');
-    } else {
-      res.send({ id: result.insertId, ...req.body, image });
+      console.error('Error saving product:', err);
+      return res.status(500).send('Error saving product');
     }
+    res.send({ id: result.insertId, ...req.body, image });
   });
 });
 
 // Get All Products
 app.get('/api/products', (req, res) => {
   const sql = 'SELECT * FROM products';
-
-  // Use connection for the query
-  connection.query(sql, (err, results) => {
+  pool.query(sql, (err, results) => {
     if (err) {
-      console.error(err);
-      res.status(500).send('Error fetching products');
-    } else {
-      res.send(results);
+      console.error('Error fetching products:', err);
+      return res.status(500).send('Error fetching products');
     }
+    res.send(results);
   });
 });
 
@@ -72,21 +86,46 @@ app.get('/api/products', (req, res) => {
 app.delete('/api/products/:id', (req, res) => {
   const { id } = req.params;
   const sql = 'DELETE FROM products WHERE id = ?';
-
-  // Use connection for the query
-  connection.query(sql, [id], (err, result) => {
+  pool.query(sql, [id], (err) => {
     if (err) {
-      console.error(err);
-      res.status(500).send('Error deleting product');
-    } else {
-      res.send({ message: 'Product deleted successfully' });
+      console.error('Error deleting product:', err);
+      return res.status(500).send('Error deleting product');
     }
+    res.send({ message: 'Product deleted successfully' });
+  });
+});
+
+// Update Product
+app.put('/api/products/:id', upload.single('image'), (req, res) => {
+  const { id } = req.params;
+  const { name, mainTitle, subTitle, price, mrp, rating, reviews, weight, category } = req.body;
+  const image = req.file ? `/uploads/${req.file.filename}` : null;
+
+  let sql = `
+    UPDATE products SET 
+    name=?, mainTitle=?, subTitle=?, price=?, mrp=?, rating=?, reviews=?, weight=?, category=?
+  `;
+  const values = [name, mainTitle, subTitle, price, mrp, rating, reviews, weight, category];
+
+  if (image) {
+    sql += ', image=?';
+    values.push(image);
+  }
+
+  sql += ' WHERE id=?';
+  values.push(id);
+
+  pool.query(sql, values, (err) => {
+    if (err) {
+      console.error('Error updating product:', err);
+      return res.status(500).send('Error updating product');
+    }
+    res.send({ message: 'Product updated successfully' });
   });
 });
 
 // Start Server
 const PORT = process.env.PORT || 8080;
-
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
